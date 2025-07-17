@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mô phỏng Đàn Kiến</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-color: #f0f2f5;
+            font-family: 'Be Vietnam Pro', sans-serif;
+            color: #333;
+        }
+        .container {
+            width: 95%;
+            max-width: 900px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            border: 1px solid #e0e0e0;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            background-color: #faf8f5; /* Màu đất sáng */
+        }
+        .header {
+            padding: 20px;
+            background-color: #4a7c59;
+            color: white;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 1.8rem;
+        }
+        .instructions {
+            padding: 15px 20px;
+            background-color: #f7f7f7;
+            border-top: 1px solid #e0e0e0;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+        .instructions ul {
+            padding-left: 20px;
+            margin: 0;
+        }
+        .instructions li {
+            margin-bottom: 8px;
+        }
+        .instructions code {
+            background-color: #e0e0e0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="header">
+            <h1>Mô phỏng Thế giới Loài Kiến</h1>
+        </div>
+        <div class="instructions">
+            <strong>Hướng dẫn:</strong>
+            <ul>
+                <li><code>Nhấp chuột trái</code>: Thả thức ăn xuống mặt đất.</li>
+                <li><code>Nhấp chuột phải</code>: Ra lệnh cho đàn kiến rời tổ để tìm kiếm thức ăn.</li>
+            </ul>
+        </div>
+        <canvas id="antCanvas"></canvas>
+    </div>
+
+    <script>
+        // --- Thiết lập Canvas và Context ---
+        const canvas = document.getElementById('antCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Đặt kích thước canvas theo kích thước của container
+        const container = document.querySelector('.container');
+        let canvasWidth = container.clientWidth;
+        let canvasHeight = canvasWidth * 0.6; // Tỉ lệ 16:9.6
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        
+        window.addEventListener('resize', () => {
+            canvasWidth = container.clientWidth;
+            canvasHeight = canvasWidth * 0.6;
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            init(); 
+        });
+
+
+        // --- Các hằng số và biến toàn cục ---
+        const ANT_COUNT = 100;
+        const ANT_SPEED = 1.5;
+        const ANT_SIZE = 4;
+        const PHEROMONE_LIFESPAN = 400; 
+        const FOOD_SIZE = 3;
+
+        let ants = [];
+        let food = [];
+        let pheromonesToFood = [];
+        let nest;
+        let antsActive = false;
+
+        // --- Lớp Vector hỗ trợ tính toán ---
+        class Vector {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+            }
+            clone() { return new Vector(this.x, this.y); }
+            add(v) { this.x += v.x; this.y += v.y; return this; }
+            subtract(v) { this.x -= v.x; this.y -= v.y; return this; }
+            multiply(scalar) { this.x *= scalar; this.y *= scalar; return this; }
+            magnitude() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+            normalize() {
+                const mag = this.magnitude();
+                if (mag > 0) { this.x /= mag; this.y /= mag; }
+                return this;
+            }
+            setMagnitude(mag) { return this.normalize().multiply(mag); }
+            limit(max) {
+                const magSq = this.x * this.x + this.y * this.y;
+                if (magSq > max * max) { this.normalize().multiply(max); }
+                return this;
+            }
+            static distance(v1, v2) {
+                const dx = v1.x - v2.x;
+                const dy = v1.y - v2.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+        }
+        
+        // --- Lớp Tổ Kiến ---
+        class Nest {
+            constructor(x, y) {
+                this.position = new Vector(x, y);
+                this.radius = 20;
+            }
+            draw() {
+                ctx.fillStyle = '#6b4f3a';
+                ctx.strokeStyle = '#4a3728';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(this.position.x, this.position.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = '#2d2017';
+                ctx.beginPath();
+                ctx.arc(this.position.x, this.position.y, this.radius / 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // --- Lớp Kiến (Đã cải tiến logic di chuyển) ---
+        class Ant {
+            constructor(x, y) {
+                this.position = new Vector(x, y);
+                this.velocity = new Vector(Math.random() * 2 - 1, Math.random() * 2 - 1).setMagnitude(ANT_SPEED);
+                this.acceleration = new Vector(0, 0); // Gia tốc để lái
+                this.maxSpeed = ANT_SPEED;
+                this.maxForce = 0.25; // Lực lái tối đa
+                this.state = 'WANDERING';
+                this.hasFood = false;
+                this.pheromoneDropRate = 5;
+                this.frameCount = 0;
+            }
+
+            applyForce(force) {
+                this.acceleration.add(force);
+            }
+
+            update() {
+                this.frameCount++;
+                
+                if (this.state === 'WANDERING') {
+                    this.wander();
+                    this.sniffForPheromones(pheromonesToFood, 'SEEKING_FOOD');
+                    this.findFood();
+                } else if (this.state === 'SEEKING_FOOD') {
+                    this.followPheromones(pheromonesToFood);
+                    this.findFood();
+                } else if (this.state === 'RETURNING_HOME') {
+                    this.returnToNest();
+                    if (this.frameCount % this.pheromoneDropRate === 0) {
+                       this.dropPheromone(pheromonesToFood);
+                    }
+                }
+
+                if (this.state !== 'RETURNING_HOME') {
+                    this.velocity.add(this.acceleration);
+                    this.velocity.limit(this.maxSpeed);
+                    this.position.add(this.velocity);
+                    this.acceleration.multiply(0);
+                } else {
+                    this.position.add(this.velocity);
+                }
+                
+                this.keepInBounds();
+            }
+            
+            seek(target) {
+                const desired = new Vector(target.x, target.y).subtract(this.position);
+                desired.setMagnitude(this.maxSpeed);
+                const steer = desired.subtract(this.velocity);
+                steer.limit(this.maxForce);
+                return steer;
+            }
+
+            wander() {
+                const wanderForce = new Vector(Math.random() * 2 - 1, Math.random() * 2 - 1);
+                wanderForce.setMagnitude(0.3); // Tăng từ 0.1 lên 0.3 để dao động mạnh hơn
+                this.applyForce(wanderForce);
+            }
+            
+            // *** LOGIC CẢI TIẾN: Thêm "nhiễu" để di chuyển tự nhiên hơn ***
+            followPheromones(pheromoneList) {
+    const predict = this.velocity.clone();
+    predict.setMagnitude(25);
+    const predictLoc = this.position.clone().add(predict);
+
+    let target = null;
+    let worldRecord = Infinity;
+
+    for (const p of pheromoneList) {
+        const d = Vector.distance(predictLoc, p.position);
+        if (d < worldRecord) {
+            worldRecord = d;
+            target = p.position;
+        }
+    }
+
+    if (target !== null && worldRecord < 50) {
+        const steer = this.seek(target);
+        const randomWobble = new Vector(Math.random() * 2 - 1, Math.random() * 2 - 1);
+        randomWobble.setMagnitude(this.maxForce * 1.0); // Tăng từ 0.75 lên 1.0
+        steer.add(randomWobble);
+        this.applyForce(steer);
+
+        if (worldRecord < 10) {
+            this.state = 'WANDERING';
+        }
+    } else {
+        this.wander();
+    }
+}
+            findFood() {
+                for (let i = food.length - 1; i >= 0; i--) {
+                    if (Vector.distance(this.position, food[i]) < ANT_SIZE + FOOD_SIZE) {
+                        this.hasFood = true;
+                        this.state = 'RETURNING_HOME';
+                        this.velocity.multiply(-1);
+                        food.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+            
+            returnToNest() {
+    const desired = new Vector(nest.position.x, nest.position.y).subtract(this.position);
+    desired.setMagnitude(this.maxSpeed);
+
+    // Thêm một chút dao động ngẫu nhiên
+    const randomWobble = new Vector(Math.random() * 2 - 1, Math.random() * 2 - 1);
+    randomWobble.setMagnitude(0.5); // Dao động nhỏ, không quá lệch hướng
+    desired.add(randomWobble);
+
+    this.velocity = desired;
+
+    if (Vector.distance(this.position, nest.position) < nest.radius) {
+        this.hasFood = false;
+        this.state = 'SEEKING_FOOD';
+        this.velocity.multiply(-1);
+    }
+}
+
+            dropPheromone(pheromoneList) {
+                pheromoneList.push(new Pheromone(this.position.x, this.position.y));
+            }
+            
+            sniffForPheromones(pheromoneList, newState) {
+                for (const p of pheromoneList) {
+                    if (Vector.distance(this.position, p.position) < 10) {
+                        this.state = newState;
+                        break;
+                    }
+                }
+            }
+
+            keepInBounds() {
+                if (this.position.x < 0 || this.position.x > canvasWidth) this.velocity.x *= -1;
+                if (this.position.y < 0 || this.position.y > canvasHeight) this.velocity.y *= -1;
+            }
+
+            draw() {
+                const angle = Math.atan2(this.velocity.y, this.velocity.x);
+                ctx.save();
+                ctx.translate(this.position.x, this.position.y);
+                ctx.rotate(angle);
+                ctx.fillStyle = this.hasFood ? '#ff8c00' : '#333';
+                ctx.beginPath();
+                ctx.ellipse(0, 0, ANT_SIZE, ANT_SIZE / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#222';
+                ctx.beginPath();
+                ctx.arc(ANT_SIZE / 2, 0, ANT_SIZE / 2.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+        
+        // --- Lớp Pheromone ---
+        class Pheromone {
+            constructor(x, y) {
+                this.position = new Vector(x, y);
+                this.lifespan = PHEROMONE_LIFESPAN;
+            }
+            update() { this.lifespan--; }
+            draw() {
+                ctx.fillStyle = `rgba(100, 200, 100, ${this.lifespan / PHEROMONE_LIFESPAN * 0.5})`;
+                ctx.beginPath();
+                ctx.arc(this.position.x, this.position.y, 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // --- Hàm khởi tạo ---
+        function init() {
+            const margin = 50;
+            const nestX = Math.random() * (canvasWidth - margin * 2) + margin;
+            const nestY = Math.random() * (canvasHeight - margin * 2) + margin;
+            nest = new Nest(nestX, nestY);
+            ants = [];
+            for (let i = 0; i < ANT_COUNT; i++) {
+                ants.push(new Ant(nest.position.x, nest.position.y));
+            }
+            food = [];
+            pheromonesToFood = [];
+            antsActive = false;
+        }
+
+        // --- Vòng lặp chính ---
+        function animate() {
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            for (let i = pheromonesToFood.length - 1; i >= 0; i--) {
+                pheromonesToFood[i].update();
+                pheromonesToFood[i].draw();
+                if (pheromonesToFood[i].lifespan <= 0) {
+                    pheromonesToFood.splice(i, 1);
+                }
+            }
+
+            ctx.fillStyle = '#9acd32';
+            for (const f of food) {
+                ctx.beginPath();
+                ctx.arc(f.x, f.y, FOOD_SIZE, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            nest.draw();
+            if (antsActive) {
+                for (const ant of ants) {
+                    ant.update();
+                    ant.draw();
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+
+        // --- Xử lý sự kiện chuột ---
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            if (e.button === 0) {
+                for (let i = 0; i < 15; i++) {
+                    const offsetX = (Math.random() - 0.5) * 30;
+                    const offsetY = (Math.random() - 0.5) * 30;
+                    food.push(new Vector(mouseX + offsetX, offsetY + mouseY));
+                }
+            } else if (e.button === 2) {
+                antsActive = true;
+            }
+        });
+        
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // --- Bắt đầu mô phỏng ---
+        init();
+        animate();
+
+    </script>
+</body>
+</html>
